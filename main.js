@@ -6,7 +6,7 @@ const path = require('node:path');
 const fs = require('node:fs');
 const WebhookServer = require('./lib/webhook-server');
 const EspClient = require('./lib/esp-client');
-const { normalizeSecrets } = require('./lib/secrets');
+const { normalizeSecrets, migrateSecrets } = require('./lib/secrets');
 
 class Fingerprint extends utils.Adapter {
     constructor(options = {}) {
@@ -31,7 +31,9 @@ class Fingerprint extends utils.Adapter {
         await this._createObjects();
         await this.setStateAsync('info.connection', { val: false, ack: true });
 
-        // Repair/replace unusable secrets before they are used (see v0.7.6 changelog)
+        // Encrypt secrets still stored as plain text (encryptedNative since v0.7.13), then
+        // repair/replace values that are still unusable — both before the secrets are used
+        await migrateSecrets(this);
         await normalizeSecrets(this.config, this.log, attr => this.getEncryptedConfig(attr));
 
         // Ensure a webhook token exists (auto-generate on first start)
@@ -1204,7 +1206,8 @@ class Fingerprint extends utils.Adapter {
 
     /**
      * Ensure a webhook token exists. Generates a random one on first start and
-     * persists it into the adapter's native config.
+     * persists it encrypted into the adapter's native config (`encryptedNative`: a plain
+     * text value would be damaged by the controller's decryption on the next start).
      *
      * @returns {Promise<string>} the active webhook token
      */
@@ -1216,7 +1219,7 @@ class Fingerprint extends utils.Adapter {
         token = crypto.randomBytes(24).toString('hex');
         try {
             await this.extendForeignObjectAsync(`system.adapter.${this.namespace}`, {
-                native: { webhookToken: token },
+                native: { webhookToken: this.encrypt(token) },
             });
             this.config.webhookToken = token;
             this.log.info('Generated a new webhook token and stored it in the instance config.');
